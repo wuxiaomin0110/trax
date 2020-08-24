@@ -269,12 +269,10 @@ def grad(f, has_aux=False):
 _orig_result_is_list = threading.local()
 
 
-def _record_result_type(f):
-  # A wrapper just for setting _orig_result_is_list, as a workaround for
-  # b/121383831
+def _record_result_type(recorder, f):
   def wrapper(*args, **kwargs):
     res = f(*args, **kwargs)
-    _orig_result_is_list.val = isinstance(res, list)
+    recorder(res)
     return res
 
   return wrapper
@@ -332,7 +330,9 @@ def jit(f,
     kwargs = {k: _tf_to_np(v) for k, v in kwargs.items()}
     if xla_forced_compile:
       # Workaround b/121383831
-      f_ = _record_result_type(f)
+      def recorder(res):
+        _orig_result_is_list.val = isinstance(res, list)
+      f_ = _record_result_type(recorder, f)
       np_out = tf.xla.experimental.compile(lambda: f_(*np_args, **kwargs))
       # Workaround b/121383831
       if (isinstance(np_out, list) and len(np_out) == 1 and
@@ -356,7 +356,10 @@ def jit(f,
   return _f
 
 
-def eval_on_shapes(f, static_argnums=()):
+_python_outputs = threading.local()
+
+
+def eval_on_shapes(f, static_argnums=(), allow_static_outputs=False):
   """Returns a function that evaluates `f` given input shapes and dtypes.
 
   It transforms function `f` to a function that performs the same computation as
@@ -364,13 +367,25 @@ def eval_on_shapes(f, static_argnums=()):
 
   Args:
     f: the function to be transformed.
-    static_argnums: See documentation of `jit`.
+    static_argnums: see documentation of `jit`.
+    allow_static_outputs: whether to allow non-array outputs.
 
   Returns:
     A function whose input arguments can be either the same as `f`'s or only
     their shapes/dtypes represented by `tf.TensorSpec`, and whose return values
-    are `tf.TensorSpec`s with the same nested structure as `f`'s return values.
+    are `tf.TensorSpec`s with the same nested structure as `f`'s return
+    values. If `allow_static_outputs` is True, when `f` returns some non-array
+    outputs (e.g. Python integers), the converted function will return them
+    as-is instead of returning `tf.TensorSpec`s for them.
   """
+  if allow_static_outputs:
+    def recorder(res):
+      _python_outputs.val = tf.nest.map_structure(
+          lambda x: None if isinstance(x, (tf_np.ndarray, tf.Tensor)) else x,
+          res)
+    f = _record_result_type(recorder, f)
+    python_outputs_map = {}
+
   # TODO(wangpeng): tf.function could add a knob to turn off materializing the
   #   graph, so that we don't waste computation and memory when we just want
   #   shape inference.
@@ -398,9 +413,29 @@ def eval_on_shapes(f, static_argnums=()):
         new_args.append(arg)
       else:
         new_args.append(tf.nest.map_structure(abstractify, arg))
-    res = tf_f.get_concrete_function(*new_args).structured_outputs
 
-    return tf.nest.map_structure(to_tensor_spec, res)
+    if allow_static_outputs:
+      def _hash(args):
+        # TODO(wangpeng): This hash loses some structural info. Improve it.
+        return hash(tuple(tf.nest.flatten(args)))
+      _python_outputs.val = None
+
+    res = tf_f.get_concrete_function(*new_args).structured_outputs
+    res = tf.nest.map_structure(to_tensor_spec, res)
+
+    if allow_static_outputs:
+      key = _hash(new_args)
+      if python_outputs_map.get(key) is None:
+        python_outputs_map[key] = _python_outputs.val
+      # We can also call tf.get_static_value on structured_outputs to retrieve
+      # the Python values, but since we'll need to use _python_outputs to store
+      # "which outputs are static?" anyway, we choose to directly store the
+      # Python values in _python_outputs.
+      res = tf.nest.map_structure(
+          lambda x, python_value: x if python_value is None else python_value,
+          res, python_outputs_map[key])
+
+    return res
 
   # Provides access to `tf_f` for testing purpose.
   f_return._tf_function = tf_f  # pylint: disable=protected-access
@@ -1229,7 +1264,9 @@ def _get_pmap_impl(f, devices, has_tpu):
   """
   if has_tpu:
     # Workaround b/121383831
-    f = _record_result_type(f)
+    def recorder(res):
+      _orig_result_is_list.val = isinstance(res, list)
+    f = _record_result_type(recorder, f)
 
   def tf_f(*tf_args):
     """A wrapper for `f` that takes/returns tensors."""

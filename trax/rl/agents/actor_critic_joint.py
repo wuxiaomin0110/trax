@@ -23,15 +23,15 @@ from trax import layers as tl
 from trax import supervised
 from trax.fastmath import numpy as jnp
 from trax.fastmath import stop_gradient
-from trax.rl import actor_critic
 from trax.rl import distributions
 from trax.rl import rl_layers
-from trax.rl import training as rl_training
+from trax.rl.agents import actor_critic
+from trax.rl.agents import base
 from trax.supervised import lr_schedules as lr
 
 
 # pylint: disable=g-long-lambda
-class ActorCriticJointTrainer(rl_training.RLTrainer):
+class ActorCriticJointAgent(base.Agent):
   """Trains a joint policy-and-value model using actor-critic methods."""
 
   def __init__(self, task,
@@ -195,7 +195,7 @@ class ActorCriticJointTrainer(rl_training.RLTrainer):
 
   def train_epoch(self):
     """Trains RL for one epoch."""
-    n_evals = rl_training.remaining_evals(
+    n_evals = base.remaining_evals(
         self._trainer.step,
         self._epoch,
         self._train_steps_per_epoch,
@@ -206,7 +206,7 @@ class ActorCriticJointTrainer(rl_training.RLTrainer):
           self._supervised_eval_steps)
 
 
-class PPOJointTrainer(ActorCriticJointTrainer):
+class PPOJoint(ActorCriticJointAgent):
   """The Proximal Policy Optimization Algorithm aka PPO.
 
   Trains policy and value models using the PPO algortithm.
@@ -455,7 +455,7 @@ class PPOJointTrainer(ActorCriticJointTrainer):
     return tl.Fn('PPOObjectiveMean', f)
 
 
-class A2CJointTrainer(ActorCriticJointTrainer):
+class A2CJoint(ActorCriticJointAgent):
   """The A2C algorithm.
 
   Trains policy and value models using the A2C algortithm.
@@ -618,7 +618,7 @@ class A2CJointTrainer(ActorCriticJointTrainer):
     return tl.Fn('A2CObjectiveMean', f, n_out=1)
 
 
-class AWRJointTrainer(ActorCriticJointTrainer):
+class AWRJoint(ActorCriticJointAgent):
   """Trains a joint policy-and-value model using AWR."""
 
   # TODO(henrykm): value_loss_coeff looks like a common parameter

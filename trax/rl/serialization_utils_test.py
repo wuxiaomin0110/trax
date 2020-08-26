@@ -19,18 +19,27 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
+import itertools
+
 from absl.testing import parameterized
 import gin
 import gym
 from jax import numpy as jnp
 import numpy as np
 from tensorflow import test
-
+from trax import fastmath as trax_math
+from trax import layers as tl
+from trax import models as trax_models
+from trax import optimizers as trax_optimizers
 from trax import shapes
+from trax.data import inputs as trax_input
 from trax.layers import base as layers_base
 from trax.models import transformer
 from trax.rl import serialization_utils
 from trax.rl import space_serializer
+from trax.supervised import lr_schedules as trax_lr
+from trax.supervised import trainer_lib
 
 
 # pylint: disable=invalid-name
@@ -118,6 +127,98 @@ class SerializationTest(parameterized.TestCase):
     np.testing.assert_array_equal(obs_repr, obs)
     # Check weights.
     np.testing.assert_array_equal(weights, [[[1, 1], [1, 1], [1, 1], [0, 0]]])
+
+  def test_train_model_with_serialization(self):
+
+    def generate_signals(seq_len):
+      while True:
+        yield (
+            np.random.rand(seq_len),  # the 1st time series
+            np.random.rand(seq_len),  # the 2nd time series
+        )
+
+    def batch_stream(stream, batch_size):
+      while True:
+        yield trax_math.nested_stack(list(itertools.islice(stream, batch_size)))
+
+    def signal_inputs(seq_len, batch_size):
+      def stream_fn(num_devices):
+        del num_devices
+        for (x, y) in batch_stream(
+            generate_signals(seq_len=seq_len),
+            batch_size=batch_size,
+        ):
+          mask = np.ones_like(x).astype(np.float32)
+          yield (x, y, x, y, mask
+                )  # (input_x, input_y, target_x, target_y, mask)
+
+      return trax_input.Inputs(
+          train_stream=stream_fn,
+          eval_stream=stream_fn,
+      )
+
+    precision = 2
+    model_kwargs = {
+        'vocab_size': 16,
+        'd_model': 16,
+        'd_ff': 8,
+        'n_layers': 1,
+        'n_heads': 1,
+        'dropout': 0.03,
+    }
+    input_kwargs = {
+        'seq_len': 400,
+        'batch_size': 64,
+    }
+    train_kwargs = {
+        'steps': 10,
+    }
+
+    # Serializer handles discretization of the data.
+    srl = space_serializer.BoxSpaceSerializer(
+        space=gym.spaces.Box(shape=(1,), low=0.0, high=16.0),
+        vocab_size=model_kwargs['vocab_size'],
+        precision=precision,
+    )
+
+    # Serialization layer - serializes the two sequences and interleaves their
+    # representations.
+    serialize = lambda: tl.Serial(  # pylint: disable=g-long-lambda
+        # (n_boxes, cpu)
+        tl.Parallel(
+            serialization_utils.Serialize(serializer=srl),
+            serialization_utils.Serialize(serializer=srl),
+        ),
+        # (n_boxes_repr, cpu_repr)
+        serialization_utils.Interleave(),
+        # (n_boxes_and_cpu_repr,)
+    )
+
+    # Double the weights to go from time series weights to symbol weights.
+    # Notice that for precision=2 we add 4 instead of 2 copies of x
+    # in the line below
+    weights = tl.Fn('DoubleWeights', lambda x: jnp.concatenate(  # pylint: disable=g-long-lambda
+        (x, x, x, x), axis=1))
+
+    # TODO(henrykm): change this ad hoc serialization to the serializer
+    # from serialization_utils
+    def model(mode):
+      return tl.Serial(
+          # (input_n_boxes, input_cpu, target_n_boxes, target_cpu, weights)
+          tl.Parallel(serialize(), serialize(), weights),
+          # (input_repr, target_repr, weights)
+          trax_models.TransformerLM(mode=mode, **model_kwargs),
+      )
+
+    state = trainer_lib.train(
+        model=model,
+        inputs=functools.partial(signal_inputs, **input_kwargs),
+        optimizer=functools.partial(
+            trax_optimizers.Adam, weight_decay_rate=1e-4),
+        lr_schedule_fn=functools.partial(
+            trax_lr.multifactor, factors='constant', constant=0.001),
+        **train_kwargs)
+    self.assertEqual(10, state.step)
 
   def test_serialized_model_continuous(self):
     precision = 3

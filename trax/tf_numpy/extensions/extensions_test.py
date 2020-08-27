@@ -23,7 +23,6 @@ import functools
 from absl import flags
 from absl.testing import parameterized
 
-from jax import lax
 import numpy as np
 import tensorflow.compat.v2 as tf
 
@@ -417,7 +416,7 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
       },
   )
   def test_tf_dot_general(self, lhs_np, rhs_np, dims):
-    ans = lax.dot_general(lhs_np, rhs_np, dims)
+    ans = extensions.tf_dot_general(lhs_np, rhs_np, dims)
     result = extensions.tf_dot_general(lhs_np, rhs_np, dims)
     self.assertAllClose(result, np.array(ans))
 
@@ -461,22 +460,24 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
 
   def assertDTypesEqual(self, a, b):
     get_dtype = lambda t: t.dtype
-    self.assertEqual(tf.nest.map_structure(get_dtype, a),
-                     tf.nest.map_structure(get_dtype, b))
+    self.assertEqual(
+        tf.nest.map_structure(get_dtype, a),
+        tf.nest.map_structure(get_dtype, b))
 
-  @parameterized.named_parameters(
-      (f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
-      for jit_f in [False, True]
-      for jit_scan in [False, True])
+  @parameterized.named_parameters((f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
+                                  for jit_f in [False, True]
+                                  for jit_scan in [False, True])
   def testScanImpl(self, jit_scan, jit_f):
     rng = np.random.RandomState(0)
 
     d = rng.randn(2)
+
     def f(c, a):
       assert a.shape == (3,)
       assert c.shape == (4,)
-      b = tf_np.cos(tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
-                    tf_np.sum(tf_np.tan(d)))
+      b = tf_np.cos(
+          tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
+          tf_np.sum(tf_np.tan(d)))
       c = tf_np.sin(c * b)
       assert b.shape == ()  # pylint: disable=g-explicit-bool-comparison
       return c, b
@@ -501,6 +502,7 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
     rng = np.random.RandomState(0)
 
     d = rng.randn(2)
+
     def f(c_g, a_e_h):
       c, g = c_g
       a, e, h = a_e_h
@@ -508,8 +510,9 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
       assert e.shape == ()  # pylint: disable=g-explicit-bool-comparison
       assert c.shape == (4,)
       assert g.shape == (2,)
-      b = tf_np.cos(tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
-                    tf_np.sum(tf_np.tan(d)))
+      b = tf_np.cos(
+          tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
+          tf_np.sum(tf_np.tan(d)))
       f = tf_np.cos(a)
       c = tf_np.sin(c * b)
       g = tf_np.sin(g * b)
@@ -531,19 +534,20 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
     self.assertEqual((5, 3), f.shape)
     self.assertIsNone(h)
 
-  @parameterized.named_parameters(
-      (f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
-      for jit_f in [False, True]
-      for jit_scan in [False, True])
+  @parameterized.named_parameters((f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
+                                  for jit_f in [False, True]
+                                  for jit_scan in [False, True])
   def testScanGrad(self, jit_scan, jit_f):
     rng = np.random.RandomState(0)
 
     d = rng.randn(2)
+
     def f(c, a):
       assert a.shape == (3,)
       assert c.shape == (4,)
-      b = (tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.sin(c)) +
-           tf_np.sum(tf_np.sin(d)))
+      b = (
+          tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.sin(c)) +
+          tf_np.sum(tf_np.sin(d)))
       c = tf_np.sin(c * b)
       assert b.shape == ()  # pylint: disable=g-explicit-bool-comparison
       return c, b
@@ -561,8 +565,10 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
 
     def losses(scan, c, xs):
       c, ys = scan(f, c, xs)
-      return tf_np.concatenate(tf.nest.flatten(tf.nest.map_structure(
-          lambda a: tf_np.reshape(a, [-1]), (c, ys))))
+      return tf_np.concatenate(
+          tf.nest.flatten(
+              tf.nest.map_structure(lambda a: tf_np.reshape(a, [-1]), (c, ys))))
+
     def loss(scan, c, xs):
       return tf_np.sum(losses(scan, c, xs))
 
